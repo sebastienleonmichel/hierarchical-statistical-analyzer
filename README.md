@@ -1,27 +1,49 @@
-[![DOI](https://zenodo.org/badge/1207166109.svg)](https://doi.org/10.5281/zenodo.19500564)
+# Hierarchical Statistical Analyzer
 
-# fiber-assay-analyzer
+GUI-based Python framework for hierarchical and replicate-aware statistical analysis of biological datasets.
 
-GUI-based Python tool for stratified Wilcoxon (van Elteren-style) permutation analysis of DNA fiber assay data with biological replicate blocking, planned contrasts, and exportable results.
+The software is designed for:
+- stratified nonparametric testing
+- blocked experimental designs
+- hierarchical biological data
+- replicate-aware inference
+- skewed distributions commonly encountered in molecular biology
 
-## How to cite
+---
 
-If you use this software, please cite:
+# Features
 
-Terreau, S. (2026). *Fiber Assay Analyzer: stratified Wilcoxon (van Elteren-style) permutation workflow* (Version 1.0.0). Zenodo. https://doi.org/10.5281/zenodo.19500565
+## Statistical methods
 
-### BibTeX
+- Stratified Wilcoxon (van Elteren-style permutation test)
+- Linear Mixed-Effects Models (LMM)
+- Multiple testing correction:
+  - Holm
+  - Bonferroni
+  - Benjamini-Hochberg FDR
 
-```bibtex
-@software{terreau2026fiber,
-  author = {{Terreau, Sébastien}},
-  title = {Fiber Assay Analyzer: stratified Wilcoxon (van Elteren-style) permutation workflow},
-  year = {2026},
-  version = {1.0.0},
-  doi = {10.5281/zenodo.19500565},
-  url = {https://doi.org/10.5281/zenodo.19500565},
-  publisher = {Zenodo}
-}
-```
+## Experimental design support
 
-```
+- Biological replicate blocking
+- Hierarchical data structures
+- Planned contrasts
+- Unequal sample sizes
+- Skewed/non-Gaussian distributions
+
+## GUI workflow
+
+- CSV import
+- Automatic column mapping
+- Replicate assignment
+- Contrast selection
+- Exportable analysis results
+
+---
+
+# Installation
+
+## Clone repository
+
+```bash
+git clone https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer.git
+cd hierarchical-statistical-analyzer
