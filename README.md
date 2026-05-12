@@ -1,5 +1,7 @@
 # Hierarchical Statistical Analyzer
 
+[![DOI](https://zenodo.org/badge/1207166109.svg)](https://doi.org/10.5281/zenodo.19500564)
+
 GUI-based Python framework for hierarchical and replicate-aware statistical analysis of biological datasets.
 
 The software is designed for:
