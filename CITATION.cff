@@ -1,18 +1,18 @@
 cff-version: 1.2.0
 
-message: "If you use this software, please cite it using the metadata below."
+message: "If you use this software, please cite it as below."
 
 title: "Hierarchical Statistical Analyzer"
-
-version: "2.0.0"
-
-date-released: 2026-05-12
 
 type: software
 
 authors:
   - family-names: "Terreau"
     given-names: "Sébastien"
+
+version: "2.0.0"
+
+doi: 10.5281/zenodo.19500564
 
 repository-code: "https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer"
 
