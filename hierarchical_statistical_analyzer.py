@@ -22,6 +22,7 @@ Year: 2026
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -305,8 +306,8 @@ def run_lmm(
 
     for i in range(len(rows)):
 
-        rows[i]["p_holm"] = holm_adj[i]
         rows[i]["p_bonferroni"] = bonf_adj[i]
+        rows[i]["p_holm"] = holm_adj[i]
         rows[i]["p_fdr_bh"] = fdr_adj[i]
 
     return pd.DataFrame(rows)
@@ -323,12 +324,13 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         super().__init__()
 
         self.title(
-            "Hierarchical Statistical Analyzer"
+            "Hierarchical Statistical Analyzer v1.2"
         )
 
         self.geometry("1300x900")
 
         self.df = None
+        self.input_path = None
 
         self.group_vars = {}
         self.repl_vars = {}
@@ -372,9 +374,14 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
         ttk.Button(
             self.tab_input,
-            text="Open CSV",
-            command=self.open_csv
-        ).pack(padx=20, pady=20)
+            text="Open data file (.csv or .xlsx)",
+            command=self.open_data_file
+        ).pack(padx=20, pady=(20, 5))
+
+        ttk.Label(
+            self.tab_input,
+            text="Supported input formats: .csv and .xlsx"
+        ).pack(padx=20, pady=(0, 20))
 
         self.columns_box = tk.Listbox(
             self.tab_input,
@@ -387,16 +394,65 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             pady=20
         )
 
-    def open_csv(self):
+    def open_data_file(self):
 
         path = filedialog.askopenfilename(
-            filetypes=[("CSV", "*.csv")]
+            title="Open CSV or XLSX file",
+            filetypes=[
+                ("CSV or Excel files", "*.csv *.xlsx"),
+                ("CSV files", "*.csv"),
+                ("Excel files", "*.xlsx"),
+                ("All files", "*.*")
+            ]
         )
 
         if not path:
             return
 
-        self.df = pd.read_csv(path)
+        file_path = Path(path)
+        suffix = file_path.suffix.lower()
+
+        try:
+
+            if suffix == ".csv":
+
+                self.df = pd.read_csv(file_path)
+
+            elif suffix == ".xlsx":
+
+                self.df = pd.read_excel(
+                    file_path,
+                    engine="openpyxl"
+                )
+
+            else:
+
+                messagebox.showerror(
+                    "Unsupported file",
+                    "Please select a .csv or .xlsx file."
+                )
+
+                return
+
+        except ImportError:
+
+            messagebox.showerror(
+                "Missing dependency",
+                "Reading .xlsx files requires openpyxl. Install it with: pip install openpyxl"
+            )
+
+            return
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "File loading error",
+                f"Could not load the selected file:\n{e}"
+            )
+
+            return
+
+        self.input_path = file_path
 
         self.columns_box.delete(0, tk.END)
 
@@ -406,6 +462,10 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
         self.refresh_mapping()
         self.refresh_contrasts()
+
+    def open_csv(self):
+        # Backwards-compatible alias for older callback names.
+        self.open_data_file()
 
     def build_mapping(self):
 
@@ -424,6 +484,9 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
         for w in self.mapping_frame.winfo_children():
             w.destroy()
+
+        self.group_vars = {}
+        self.repl_vars = {}
 
         if self.df is None:
             return
@@ -461,6 +524,12 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
     def build_contrasts(self):
 
+        ttk.Button(
+            self.tab_contrast,
+            text="Update contrasts from mapping",
+            command=self.refresh_contrasts
+        ).pack(anchor="w", padx=20, pady=(20, 5))
+
         self.contrast_frame = ttk.Frame(
             self.tab_contrast
         )
@@ -477,13 +546,22 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         for w in self.contrast_frame.winfo_children():
             w.destroy()
 
+        self.contrast_vars = {}
+
         if self.df is None:
             return
 
-        groups = sorted(set([
-            c.split("_")[0]
-            for c in self.df.columns
-        ]))
+        groups = []
+
+        for col in self.df.columns:
+
+            group_name = self.group_vars[col].get().strip()
+
+            if group_name and group_name not in groups:
+
+                groups.append(group_name)
+
+        groups = sorted(groups)
 
         row = 0
 
@@ -555,15 +633,42 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
     def run_analysis(self):
 
+        if self.df is None:
+
+            messagebox.showerror(
+                "No input file",
+                "Please open a CSV or Excel file first."
+            )
+
+            return
+
         col_to_group = {
-            c: self.group_vars[c].get()
+            c: self.group_vars[c].get().strip()
             for c in self.df.columns
         }
 
         col_to_repl = {
-            c: self.repl_vars[c].get()
+            c: self.repl_vars[c].get().strip()
             for c in self.df.columns
         }
+
+        if any(not group for group in col_to_group.values()):
+
+            messagebox.showerror(
+                "Missing group name",
+                "All columns must have a group name in the Mapping tab."
+            )
+
+            return
+
+        if any(not repl for repl in col_to_repl.values()):
+
+            messagebox.showerror(
+                "Missing replicate ID",
+                "All columns must have a replicate ID in the Mapping tab."
+            )
+
+            return
 
         df_long = reshape_long(
             self.df,
@@ -573,11 +678,31 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
         contrasts = []
 
+        current_groups = set(col_to_group.values())
+
         for (A, B), var in self.contrast_vars.items():
 
             if var.get():
 
+                if A not in current_groups or B not in current_groups:
+
+                    messagebox.showerror(
+                        "Outdated contrasts",
+                        "The contrast list does not match the Mapping tab. Click 'Update contrasts from mapping' and run the analysis again."
+                    )
+
+                    return
+
                 contrasts.append((A, B))
+
+        if not contrasts:
+
+            messagebox.showerror(
+                "No contrast selected",
+                "Please select at least one contrast before running the analysis."
+            )
+
+            return
 
         all_results = []
 
@@ -650,8 +775,8 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
             for i in range(len(rows)):
 
-                rows[i]["p_holm"] = holm_adj[i]
                 rows[i]["p_bonferroni"] = bonf_adj[i]
+                rows[i]["p_holm"] = holm_adj[i]
                 rows[i]["p_fdr_bh"] = fdr_adj[i]
 
             wilcox_df = pd.DataFrame(rows)
@@ -680,8 +805,19 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             ignore_index=True
         )
 
+        if self.input_path is not None:
+
+            output_path = (
+                self.input_path.parent
+                / f"{self.input_path.stem}_statistical-analysis.csv"
+            )
+
+        else:
+
+            output_path = Path("statistical-analysis.csv")
+
         results.to_csv(
-            "hierarchical_analysis_results.csv",
+            output_path,
             index=False
         )
 
@@ -694,7 +830,7 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
         messagebox.showinfo(
             "Done",
-            "Analysis completed"
+            f"Analysis completed. Results saved as:\n{output_path}"
         )
 
 
