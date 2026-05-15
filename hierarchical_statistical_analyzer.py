@@ -17,6 +17,7 @@ Supports:
 
 Author: Sébastien Terreau
 Year: 2026
+Version: 2.1.1
 """
 
 
@@ -31,6 +32,9 @@ from scipy.stats import rankdata
 
 import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
+
+
+APP_VERSION = "v2.1.1"
 
 
 # ============================================================
@@ -314,6 +318,158 @@ def run_lmm(
 
 
 # ============================================================
+# SCROLLABLE GUI FRAME
+# ============================================================
+
+class ScrollableFrame(ttk.Frame):
+    """
+    A reusable scrollable frame for GUI tabs containing many rows.
+
+    This is used for the Mapping and Contrasts tabs so that datasets
+    with many conditions or many pairwise contrasts remain accessible.
+    """
+
+    def __init__(self, parent):
+
+        super().__init__(parent)
+
+        self.canvas = tk.Canvas(
+            self,
+            borderwidth=0,
+            highlightthickness=0
+        )
+
+        self.v_scrollbar = ttk.Scrollbar(
+            self,
+            orient="vertical",
+            command=self.canvas.yview
+        )
+
+        self.scrollable_frame = ttk.Frame(
+            self.canvas
+        )
+
+        self.window_id = self.canvas.create_window(
+            (0, 0),
+            window=self.scrollable_frame,
+            anchor="nw"
+        )
+
+        self.canvas.configure(
+            yscrollcommand=self.v_scrollbar.set
+        )
+
+        self.canvas.grid(
+            row=0,
+            column=0,
+            sticky="nsew"
+        )
+
+        self.v_scrollbar.grid(
+            row=0,
+            column=1,
+            sticky="ns"
+        )
+
+        self.rowconfigure(
+            0,
+            weight=1
+        )
+
+        self.columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            self._update_scroll_region
+        )
+
+        self.canvas.bind(
+            "<Configure>",
+            self._resize_inner_frame
+        )
+
+        self.canvas.bind(
+            "<Enter>",
+            self._bind_mousewheel
+        )
+
+        self.canvas.bind(
+            "<Leave>",
+            self._unbind_mousewheel
+        )
+
+    def _update_scroll_region(self, event=None):
+
+        self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")
+        )
+
+    def _resize_inner_frame(self, event):
+
+        self.canvas.itemconfigure(
+            self.window_id,
+            width=event.width
+        )
+
+    def _bind_mousewheel(self, event=None):
+
+        self.canvas.bind_all(
+            "<MouseWheel>",
+            self._on_mousewheel
+        )
+
+        self.canvas.bind_all(
+            "<Button-4>",
+            self._on_mousewheel
+        )
+
+        self.canvas.bind_all(
+            "<Button-5>",
+            self._on_mousewheel
+        )
+
+    def _unbind_mousewheel(self, event=None):
+
+        self.canvas.unbind_all(
+            "<MouseWheel>"
+        )
+
+        self.canvas.unbind_all(
+            "<Button-4>"
+        )
+
+        self.canvas.unbind_all(
+            "<Button-5>"
+        )
+
+    def _on_mousewheel(self, event):
+
+        if getattr(event, "num", None) == 4:
+
+            delta = -1
+
+        elif getattr(event, "num", None) == 5:
+
+            delta = 1
+
+        else:
+
+            delta = -int(event.delta / 120)
+
+            if delta == 0:
+
+                delta = -1 if event.delta > 0 else 1
+
+        self.canvas.yview_scroll(
+            delta,
+            "units"
+        )
+
+
+# ============================================================
 # GUI
 # ============================================================
 
@@ -324,7 +480,7 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         super().__init__()
 
         self.title(
-            "Hierarchical Statistical Analyzer v1.2"
+            f"Hierarchical Statistical Analyzer {APP_VERSION}"
         )
 
         self.geometry("1300x900")
@@ -380,7 +536,7 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
         ttk.Label(
             self.tab_input,
-            text="Supported input formats: .csv and .xlsx"
+            text=f"Supported input formats: .csv and .xlsx | {APP_VERSION}"
         ).pack(padx=20, pady=(0, 20))
 
         self.columns_box = tk.Listbox(
@@ -469,16 +625,18 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
     def build_mapping(self):
 
-        self.mapping_frame = ttk.Frame(
+        self.mapping_scroll = ScrollableFrame(
             self.tab_mapping
         )
 
-        self.mapping_frame.pack(
+        self.mapping_scroll.pack(
             fill=tk.BOTH,
             expand=True,
             padx=20,
             pady=20
         )
+
+        self.mapping_frame = self.mapping_scroll.scrollable_frame
 
     def refresh_mapping(self):
 
@@ -491,13 +649,31 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         if self.df is None:
             return
 
-        for i, col in enumerate(self.df.columns):
+        ttk.Label(
+            self.mapping_frame,
+            text="Input column",
+            width=40
+        ).grid(row=0, column=0, sticky="w", padx=5, pady=(0, 8))
+
+        ttk.Label(
+            self.mapping_frame,
+            text="Group / condition",
+            width=20
+        ).grid(row=0, column=1, sticky="w", padx=5, pady=(0, 8))
+
+        ttk.Label(
+            self.mapping_frame,
+            text="Replicate ID",
+            width=20
+        ).grid(row=0, column=2, sticky="w", padx=5, pady=(0, 8))
+
+        for i, col in enumerate(self.df.columns, start=1):
 
             ttk.Label(
                 self.mapping_frame,
                 text=col,
                 width=40
-            ).grid(row=i, column=0)
+            ).grid(row=i, column=0, sticky="w", padx=5, pady=2)
 
             g = tk.StringVar(
                 value=col.split("_")[0]
@@ -514,13 +690,13 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
                 self.mapping_frame,
                 textvariable=g,
                 width=20
-            ).grid(row=i, column=1)
+            ).grid(row=i, column=1, sticky="w", padx=5, pady=2)
 
             ttk.Entry(
                 self.mapping_frame,
                 textvariable=r,
                 width=20
-            ).grid(row=i, column=2)
+            ).grid(row=i, column=2, sticky="w", padx=5, pady=2)
 
     def build_contrasts(self):
 
@@ -530,16 +706,18 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             command=self.refresh_contrasts
         ).pack(anchor="w", padx=20, pady=(20, 5))
 
-        self.contrast_frame = ttk.Frame(
+        self.contrast_scroll = ScrollableFrame(
             self.tab_contrast
         )
 
-        self.contrast_frame.pack(
+        self.contrast_scroll.pack(
             fill=tk.BOTH,
             expand=True,
             padx=20,
             pady=20
         )
+
+        self.contrast_frame = self.contrast_scroll.scrollable_frame
 
     def refresh_contrasts(self):
 
@@ -620,15 +798,67 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             command=self.run_analysis
         ).pack(anchor="w", padx=20, pady=20)
 
-        self.output = tk.Text(
-            self.tab_run,
-            width=180,
-            height=40
+        output_frame = ttk.Frame(
+            self.tab_run
         )
 
-        self.output.pack(
+        output_frame.pack(
+            fill=tk.BOTH,
+            expand=True,
             padx=20,
             pady=20
+        )
+
+        self.output = tk.Text(
+            output_frame,
+            width=180,
+            height=40,
+            wrap="none"
+        )
+
+        output_y_scroll = ttk.Scrollbar(
+            output_frame,
+            orient="vertical",
+            command=self.output.yview
+        )
+
+        output_x_scroll = ttk.Scrollbar(
+            output_frame,
+            orient="horizontal",
+            command=self.output.xview
+        )
+
+        self.output.configure(
+            yscrollcommand=output_y_scroll.set,
+            xscrollcommand=output_x_scroll.set
+        )
+
+        self.output.grid(
+            row=0,
+            column=0,
+            sticky="nsew"
+        )
+
+        output_y_scroll.grid(
+            row=0,
+            column=1,
+            sticky="ns"
+        )
+
+        output_x_scroll.grid(
+            row=1,
+            column=0,
+            sticky="ew"
+        )
+
+        output_frame.rowconfigure(
+            0,
+            weight=1
+        )
+
+        output_frame.columnconfigure(
+            0,
+            weight=1
         )
 
     def run_analysis(self):
