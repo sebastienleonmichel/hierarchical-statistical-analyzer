@@ -1,19 +1,24 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "If you use this software, please cite it as below and identify the version used."
 title: "Hierarchical Statistical Analyzer"
 type: software
 authors:
   - family-names: "Terreau"
     given-names: "Sébastien"
-version: "3.0.0"
+version: "4.0.0"
+date-released: "2026-09-13"
+# Zenodo concept DOI: represents all versions of this software.
 doi: 10.5281/zenodo.19500564
 repository-code: "https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer"
+url: "https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer/releases/tag/v4.0.0"
 license: "MIT"
 abstract: >-
   GUI-based Python framework for hierarchical and replicate-aware
   statistical analysis of biological datasets using global and pairwise
   stratified rank permutation tests, block-aware effect summaries, and
-  linear mixed-effects models.
+  linear mixed-effects models with fixed condition and categorical
+  experiment effects and a random intercept for each experiment by
+  condition sample.
 keywords:
   - "hierarchical statistics"
   - "linear mixed model"
@@ -23,3 +28,5 @@ keywords:
   - "biostatistics"
   - "replicate-aware analysis"
   - "mixed-effects modeling"
+  - "nested observations"
+  - "experiment blocking"

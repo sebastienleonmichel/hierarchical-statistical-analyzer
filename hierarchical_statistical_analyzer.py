@@ -17,7 +17,11 @@ Supports:
 
 Author: Sébastien Terreau
 Year: 2026
-Version: 3.0.0
+Version: 4.0.0
+
+LMM structure:
+- fixed effects of condition and categorical experiment
+- random intercept for each experiment x condition combination
 """
 
 
@@ -33,11 +37,11 @@ import pandas as pd
 
 from scipy.stats import rankdata
 
-import statsmodels.formula.api as smf
+from statsmodels.regression.mixed_linear_model import MixedLM
 from statsmodels.stats.multitest import multipletests
 
 
-APP_VERSION = "v3.0.0"
+APP_VERSION = "v4.0.0"
 
 
 # ============================================================
@@ -577,6 +581,10 @@ LMM_RESPONSE_TRANSFORMS = (
     "log10"
 )
 
+LMM_METHOD = (
+    "LMM: fixed condition + experiment; random experiment x condition"
+)
+
 
 def transform_lmm_response(values, response_transform):
     """
@@ -631,6 +639,15 @@ def run_lmm(
     contrasts,
     response_transform="None"
 ):
+    """Fit each selected contrast with fixed condition and experiment effects.
+
+    A random intercept is shared by all observations in one experiment x
+    condition combination. This assumes one biological sample per combination;
+    columns mapped to the same combination share the same random intercept.
+
+    Fits use maximum-likelihood estimation and two-sided asymptotic Wald
+    p-values. This model does not add a small-sample correction.
+    """
 
     df = df_long.copy()
 
@@ -706,11 +723,6 @@ def run_lmm(
 
             continue
 
-        sub["group"] = (
-            sub["group"]
-            .astype("category")
-        )
-
         try:
 
             sub["response"] = transform_lmm_response(
@@ -718,21 +730,75 @@ def run_lmm(
                 response_transform
             )
 
-            model = smf.mixedlm(
-                "response ~ group",
-                data=sub,
-                groups=sub["replicate_id"]
+            # Explicit B-minus-A coding keeps the tested coefficient stable,
+            # even when experiment coefficients precede it in the design.
+            sub["condition_B"] = (sub["group"] == B).astype(float)
+
+            sub["replicate_id"] = (
+                sub["replicate_id"]
+                .astype("category")
+                .cat.remove_unused_categories()
             )
 
+            # Tuple-based grouping avoids collisions between labels containing
+            # separators. Each experiment x condition gets its own intercept.
+            sub["lmm_sample_id"] = sub.groupby(
+                ["replicate_id", "group"],
+                observed=True,
+                sort=False
+            ).ngroup()
+
+            if sub["lmm_sample_id"].isna().any():
+
+                raise ValueError("Missing experiment or condition label")
+
+            n_samples = sub["lmm_sample_id"].nunique()
+
+            if len(sub) <= n_samples:
+
+                raise ValueError(
+                    "Repeated observations within samples are required to "
+                    "separate sample and residual variances"
+                )
+
+            model = MixedLM.from_formula(
+                "response ~ condition_B + C(replicate_id)",
+                data=sub,
+                groups=sub["lmm_sample_id"],
+                re_formula="1"
+            )
+
+            if np.linalg.matrix_rank(model.exog) < model.exog.shape[1]:
+
+                raise ValueError(
+                    "Condition and experiment effects cannot be separated "
+                    "in this design"
+                )
+
+            if n_samples <= model.exog.shape[1]:
+
+                raise ValueError(
+                    "At least two experiments containing both conditions "
+                    "are required to estimate sample variation"
+                )
+
             fit = model.fit(reml=False)
+
+            if not fit.converged:
+
+                raise ValueError("Model did not converge")
 
             # ----------------------------------------
             # ROBUST EXTRACTION
             # ----------------------------------------
 
             pval = float(
-                fit.pvalues.iloc[1]
+                fit.pvalues.loc["condition_B"]
             )
+
+            if not np.isfinite(pval) or not 0 <= pval <= 1:
+
+                raise ValueError("Condition p-value could not be estimated")
 
             raw_p.append(pval)
 
@@ -742,7 +808,7 @@ def run_lmm(
                     f"{A} vs {B}",
 
                 "Method":
-                    "Linear Mixed Model",
+                    LMM_METHOD,
 
                 "Response_transform":
                     response_transform,
@@ -999,8 +1065,8 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         self.contrast_vars = {}
 
         self.engine_vars = {
-            "Stratified Wilcoxon": tk.BooleanVar(value=True),
-            "Linear Mixed Model": tk.BooleanVar(value=True)
+            "Linear Mixed Model": tk.BooleanVar(value=True),
+            "Stratified Wilcoxon": tk.BooleanVar(value=True)
         }
 
         self.lmm_response_transform_var = tk.StringVar(
@@ -1318,6 +1384,15 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             engine_button.pack(anchor="w", padx=40, pady=2)
 
             if engine_name == "Linear Mixed Model":
+
+                ttk.Label(
+                    frm,
+                    text=(
+                        "Fixed effects: condition and experiment. "
+                        "Random intercept: experiment x condition."
+                    ),
+                    wraplength=1000
+                ).pack(anchor="w", padx=60, pady=(4, 2))
 
                 transform_frame = ttk.Frame(frm)
 
@@ -1710,6 +1785,26 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             all_results = []
 
             # ====================================================
+            # LMM (first in both the options and the results)
+            # ====================================================
+
+            if "Linear Mixed Model" in selected_engines:
+
+                self.worker_queue.put((
+                    "status",
+                    "Running Linear Mixed Model "
+                    f"({lmm_response_transform} response)..."
+                ))
+
+                lmm_df = run_lmm(
+                    df_long,
+                    contrasts,
+                    response_transform=lmm_response_transform
+                )
+
+                all_results.append(lmm_df)
+
+            # ====================================================
             # STRATIFIED WILCOXON
             # ====================================================
 
@@ -1841,26 +1936,6 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
                 wilcox_df = pd.DataFrame(rows)
 
                 all_results.append(wilcox_df)
-
-            # ====================================================
-            # LMM
-            # ====================================================
-
-            if "Linear Mixed Model" in selected_engines:
-
-                self.worker_queue.put((
-                    "status",
-                    "Running Linear Mixed Model "
-                    f"({lmm_response_transform} response)..."
-                ))
-
-                lmm_df = run_lmm(
-                    df_long,
-                    contrasts,
-                    response_transform=lmm_response_transform
-                )
-
-                all_results.append(lmm_df)
 
             results = pd.concat(
                 all_results,
