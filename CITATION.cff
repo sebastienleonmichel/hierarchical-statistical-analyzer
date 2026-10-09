@@ -1,32 +1,35 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below and identify the version used."
-title: "Hierarchical Statistical Analyzer"
+title: "Hierarchical Statistical Analyzer (ZetaStats)"
 type: software
 authors:
   - family-names: "Terreau"
     given-names: "Sébastien"
-version: "4.0.0"
-date-released: "2026-09-13"
+version: "5.0.0"
+date-released: "2026-10-09"
 # Zenodo concept DOI: represents all versions of this software.
 doi: 10.5281/zenodo.19500564
 repository-code: "https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer"
-url: "https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer/releases/tag/v4.0.0"
+url: "https://github.com/sebastienleonmichel/hierarchical-statistical-analyzer/releases/tag/v5.0.0"
 license: "MIT"
 abstract: >-
-  GUI-based Python framework for hierarchical and replicate-aware
-  statistical analysis of biological datasets using global and pairwise
-  stratified rank permutation tests, block-aware effect summaries, and
-  linear mixed-effects models with fixed condition and categorical
-  experiment effects and a random intercept for each experiment by
-  condition sample.
+  GUI and command-line Python tool for hierarchical and replicate-aware
+  analysis of biological measurements using one global factorial linear
+  mixed model fitted by REML through R's lme4 and lmerTest. Supports fixed
+  condition, treatment and interaction effects, replicate and sample
+  random effects, Satterthwaite Type III and contrast tests, planned-family
+  Holm correction, response normalization and transforms, and three-sheet
+  Excel export with descriptive statistics and fit diagnostics.
 keywords:
   - "hierarchical statistics"
   - "linear mixed model"
-  - "stratified Wilcoxon"
-  - "van Elteren"
-  - "permutation test"
+  - "factorial design"
+  - "REML"
+  - "Satterthwaite"
+  - "Type III tests"
+  - "Holm correction"
   - "biostatistics"
   - "replicate-aware analysis"
-  - "mixed-effects modeling"
   - "nested observations"
-  - "experiment blocking"
+  - "lme4"
+  - "lmerTest"
