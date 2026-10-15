@@ -1,4 +1,4 @@
-"""ZetaStats v5.0.0 — replicate-aware factorial linear mixed models.
+"""ZetaStats v5.1.0 — replicate-aware factorial linear mixed models.
 
 Author: Sébastien Terreau, 2026.
 Input: wide CSV/XLSX, one sample per Condition_treatment_replicateID column.
@@ -15,6 +15,10 @@ treatment deviations let treatment effects vary between experiments, with
 an exchangeable categorical covariance structure. Replicate × condition and
 sample deviations represent the other pairwise/three-factor random effects.
 Cells remain nested in samples; cell counts are NOT biological replicate n.
+The replicate × condition and replicate × treatment components can be
+excluded explicitly. The reduced model retains replicate and sample random
+intercepts, with the same fixed effects. Full is the default; the selected
+structure and exact formula are recorded in every analysis export.
 No automatic simpler-model fallback is made for invalid or singular fits.
 """
 
@@ -40,7 +44,7 @@ from tkinter import filedialog, messagebox, ttk
 import numpy as np
 import pandas as pd
 
-APP_VERSION = "v5.0.0"
+APP_VERSION = "v5.1.0"
 LMM_RESPONSE_TRANSFORMS = ("None", "log2", "ln", "log10")
 SHEET_NAMES = ("1_Descriptive_stats", "2_Variance_TypeIII", "3_Contrasts")
 REQUIRED_R_PACKAGES = ("lme4", "lmerTest", "jsonlite")
@@ -69,8 +73,10 @@ tryCatch({
            if (nC > 1L) "condition" else "treatment"
   random <- c("(1|replicate_id)")
   if (nC > 1L && nT > 1L) {
-    random <- c(random, "(1|replicate_id:condition)",
-                "(1|replicate_id:treatment)")
+    if (is.null(cfg$include_replicate_condition) || isTRUE(cfg$include_replicate_condition))
+      random <- c(random, "(1|replicate_id:condition)")
+    if (is.null(cfg$include_replicate_treatment) || isTRUE(cfg$include_replicate_treatment))
+      random <- c(random, "(1|replicate_id:treatment)")
   }
   random <- c(random, "(1|sample_id)")
   formula_text <- paste("response ~", fixed, "+", paste(random, collapse=" + "))
@@ -374,7 +380,51 @@ def check_backend(rscript=None):
     return executable, result.stdout.strip()
 
 
-def validate_design(df):
+def random_effect_settings(df, include_replicate_condition=True, include_replicate_treatment=True):
+    """Describe an explicit selection; experiment and sample terms are mandatory."""
+    for name, value in (("include_replicate_condition", include_replicate_condition),
+                        ("include_replicate_treatment", include_replicate_treatment)):
+        if not isinstance(value, (bool, np.bool_)):
+            raise ValueError(f"{name} must be True or False.")
+    include_replicate_condition = bool(include_replicate_condition)
+    include_replicate_treatment = bool(include_replicate_treatment)
+    n_c, n_t = df.condition.nunique(), df.treatment.nunique()
+    two_factors = n_c > 1 and n_t > 1
+    fixed = "condition * treatment" if two_factors else "condition" if n_c > 1 else "treatment"
+    profile = ("Full" if include_replicate_condition and include_replicate_treatment else
+               "Reduced" if not include_replicate_condition and not include_replicate_treatment else "Custom")
+    terms = ["(1|replicate_id)"]
+    excluded, not_applicable = [], []
+    states = {}
+    for name, selected, term in (
+        ("Replicate_condition", include_replicate_condition, "(1|replicate_id:condition)"),
+        ("Replicate_treatment", include_replicate_treatment, "(1|replicate_id:treatment)"),
+    ):
+        if not two_factors:
+            states[f"{name}_setting"] = "Not applicable: only one factor varies"
+            not_applicable.append(term)
+        elif selected:
+            states[f"{name}_setting"] = "Included"
+            terms.append(term)
+        else:
+            states[f"{name}_setting"] = "Excluded by user"
+            excluded.append(term)
+    terms.append("(1|sample_id)")
+    return dict(
+        Random_effects_structure=profile,
+        Model_formula=f"response ~ {fixed} + " + " + ".join(terms),
+        Random_effects_included=" + ".join(terms),
+        Random_effects_excluded=" + ".join(excluded) or "None",
+        Random_effects_not_applicable=" + ".join(not_applicable) or "None",
+        Requested_replicate_condition=include_replicate_condition,
+        Requested_replicate_treatment=include_replicate_treatment,
+        **states,
+        Random_effects_selection_policy="Explicit user selection; experiment and sample random intercepts are retained. No automatic term removal or simpler-model fallback.",
+    )
+
+
+def validate_design(df, include_replicate_condition=True, include_replicate_treatment=True):
+    random_effect_settings(df, include_replicate_condition, include_replicate_treatment)
     cells = sorted(set(zip(df.condition, df.treatment)))
     conditions, treatments = sorted(df.condition.unique()), sorted(df.treatment.unique())
     if len(cells) < 2:
@@ -393,27 +443,33 @@ def validate_design(df):
     samples = df.drop_duplicates("sample_id")
     keys = [[(r,) for r in samples.replicate_id]]
     if len(conditions)>1 and len(treatments)>1:
-        keys += [list(zip(samples.replicate_id,samples.condition)),
-                 list(zip(samples.replicate_id,samples.treatment))]
+        if include_replicate_condition:
+            keys.append(list(zip(samples.replicate_id,samples.condition)))
+        if include_replicate_treatment:
+            keys.append(list(zip(samples.replicate_id,samples.treatment)))
     keys += [[(s,) for s in samples.sample_id]]
     kernels = np.column_stack([np.array([[a==b for b in key] for a in key], dtype=float).ravel() for key in keys])
     if np.linalg.matrix_rank(kernels) < len(keys):
-        raise ValueError("Replicate/condition/treatment random components are confounded. Check replicate IDs and the repeated design.")
+        raise ValueError("Selected random components are confounded. Check replicate IDs, the repeated design, and the selected random-effects structure.")
     return cells, conditions, treatments
 
 
-def run_r_model(df, contrasts, rscript=None, timeout=1800, progress_callback=None):
-    cells, conditions, treatments = validate_design(df)
+def run_r_model(df, contrasts, rscript=None, timeout=1800, progress_callback=None,
+                include_replicate_condition=True, include_replicate_treatment=True):
+    settings = random_effect_settings(df, include_replicate_condition, include_replicate_treatment)
+    cells, conditions, treatments = validate_design(df, include_replicate_condition, include_replicate_treatment)
     cell_ids = {cell: f"G{i+1:04d}" for i,cell in enumerate(cells)}
     executable, _ = check_backend(rscript)
     if progress_callback:
-        progress_callback("Fitting one full LMM (REML); computing Type III and contrast tests...")
+        progress_callback(f"Fitting one {settings['Random_effects_structure'].lower()} LMM (REML); computing Type III and contrast tests...")
     with tempfile.TemporaryDirectory(prefix="zetastats-v5-") as temporary:
         folder = Path(temporary)
         data_path, config_path = folder/"data.csv", folder/"config.json"
         result_path, script_path = folder/"results.json", folder/"engine.R"
         df[["response","condition","treatment","replicate_id","sample_id"]].to_csv(data_path, index=False)
         config = dict(data=str(data_path), output=str(result_path), conditions=conditions,
+            include_replicate_condition=bool(include_replicate_condition),
+            include_replicate_treatment=bool(include_replicate_treatment),
             treatments=treatments, cells=[dict(id=cell_ids[c],condition=c[0],treatment=c[1]) for c in cells],
             contrasts=[dict(A=cell_ids[a],B=cell_ids[b]) for a,b in contrasts])
         config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
@@ -423,6 +479,8 @@ def run_r_model(df, contrasts, rscript=None, timeout=1800, progress_callback=Non
         result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else {}
         if result.get("error") or process.returncode:
             raise RuntimeError(result.get("error") or (process.stderr or process.stdout)[-3000:] or "R model failed without a result.")
+        if result.get("meta", {}).get("formula") != settings["Model_formula"]:
+            raise RuntimeError("The fitted model formula does not match the selected random-effects structure.")
     return result, cell_ids
 
 
@@ -438,9 +496,11 @@ def cell_label(cell):
     return f"{cell[0]} | {cell[1]}"
 
 
-def format_results(df, backend, cell_ids, contrasts, transform, reference, divisor):
+def format_results(df, backend, cell_ids, contrasts, transform, reference, divisor,
+                   include_replicate_condition=True, include_replicate_treatment=True):
     inverse = {v:k for k,v in cell_ids.items()}
     meta = backend["meta"]
+    settings = random_effect_settings(df, include_replicate_condition, include_replicate_treatment)
     means = {r["id"]:r["EMM"] for r in backend["means"]}
     rows = []
     for result in backend["contrasts"]:
@@ -470,8 +530,9 @@ def format_results(df, backend, cell_ids, contrasts, transform, reference, divis
     variance_rows = []
     interpretations = {
         "Intercept":"Equal-weight grand mean across condition–treatment cells versus zero; this does not test interaction.",
-        "condition":"Average condition effect across treatment levels, adjusted for the full model.",
-        "treatment":"Average treatment effect across conditions, with random replicate-specific treatment deviations.",
+        "condition":"Average condition effect across treatment levels, adjusted for the selected global model.",
+        "treatment":"Average treatment effect across conditions, adjusted for the selected global model." +
+            (" Includes a separate replicate × treatment variance term." if settings["Replicate_treatment_setting"] == "Included" else " No separate replicate × treatment variance term is fitted."),
         "condition:treatment":"Does the condition effect change with treatment? A nonsignificant result does not establish no interaction."}
     for rr in backend["type_iii"]:
         variance_rows.append(dict(Section="Type III fixed-effect tests", **rr,
@@ -489,16 +550,19 @@ def format_results(df, backend, cell_ids, contrasts, transform, reference, divis
         rr = rr.copy(); cell = inverse[rr.pop("id")]
         variance_rows.append(dict(Section="Conditional residual diagnostics", Effect=cell_label(cell),
             **rr, Note="Descriptive residual variability; assess variance patterns after transformation."))
-    notes = dict(App_version=APP_VERSION, Model_formula=meta["formula"],
+    notes = dict(App_version=APP_VERSION, **settings,
         Estimation=meta["estimation"], DF_method=meta["df_method"], Model_status=meta["status"],
+        Model_singular=meta["singular"],
         Input_observations=len(df), Biological_replicates=df.replicate_id.nunique(), Biological_samples=df.sample_id.nunique(),
         Response_transform=transform, Normalization_reference=cell_label(reference) if reference else "None",
         Normalization_divisor=divisor,
         Normalization_definition="All observations divided by the arithmetic mean of the reference replicate means, BEFORE transformation; conditional on the observed divisor.",
-        Random_treatment_definition="Independent exchangeable replicate × treatment deviations plus a fixed overall treatment effect; not a fully random treatment factor or an unrestricted correlated-slope covariance.",
-        Interaction_definition="Condition × treatment is fixed; replicate × condition, replicate × treatment and replicate × condition × treatment are random variance components.",
+        Random_treatment_definition=("Independent exchangeable replicate × treatment deviations plus a fixed overall treatment effect; not a fully random treatment factor or an unrestricted correlated-slope covariance."
+            if settings["Replicate_treatment_setting"] == "Included" else
+            "No separate replicate × treatment term. The overall treatment effect is fixed; experiment and biological sample random intercepts remain."),
+        Interaction_definition="Condition × treatment is fixed when both factors vary. Random components are those listed in Random_effects_included; biological sample variation is always retained.",
         Eta_squared_definition="Approximate partial eta-squared: F*NumDF/(F*NumDF+DenDF); contrasts use t^2/(t^2+DenDF). Not classical total eta-squared or total explained variance.",
-        P_value_definition="Type III and all contrast tests use the same full model and all included observations; no pairwise refits.",
+        P_value_definition="Type III and all contrast tests use the same selected global model and all included observations; no pairwise refits.",
         Holm_definition=f"Across all {len(contrasts)} selected contrasts; failed tests still count. Type III omnibus tests form a separate unadjusted table.",
         CI_definition="95% individual model confidence intervals; these intervals are not adjusted for multiplicity.",
         Descriptive_definition="Main rows summarize equally weighted biological replicate means. Separate within-sample rows describe observations.",
@@ -517,26 +581,31 @@ def format_results(df, backend, cell_ids, contrasts, transform, reference, divis
     return variance_df, contrast_df, notes
 
 
-def failed_results(df, contrasts, transform, reference, divisor, error):
+def failed_results(df, contrasts, transform, reference, divisor, error,
+                   include_replicate_condition=True, include_replicate_treatment=True):
     status = f"Inference withheld: {error}"
+    settings = random_effect_settings(df, include_replicate_condition, include_replicate_treatment)
     rows = []
     for a,b in contrasts:
         rows.append(dict(Contrast=f"{cell_label(a)} vs {cell_label(b)}",Condition_A=a[0],Treatment_A=a[1],
             Condition_B=b[0],Treatment_B=b[1],Method="Global factorial LMM; unavailable",
             Response_transform=transform,Normalization_reference=cell_label(reference) if reference else "None",
             Normalization_divisor=divisor,Holm_family_size=len(contrasts),Status=status,Symbol=""))
-    variance = pd.DataFrame([dict(Section="Model/settings",Effect="Model_status",Status=status,Note=str(error)),
-        dict(Section="Model/settings",Effect="Response_transform",Note=transform),
-        dict(Section="Model/settings",Effect="Normalization_reference",Note=cell_label(reference) if reference else "None"),
-        dict(Section="Model/settings",Effect="Normalization_divisor",Note=str(divisor))])
-    return variance, pd.DataFrame(rows).reindex(columns=CONTRAST_COLUMNS), dict(Model_status=status)
+    notes = dict(App_version=APP_VERSION, **settings, Model_status=status,
+        Response_transform=transform, Normalization_reference=cell_label(reference) if reference else "None",
+        Normalization_divisor=divisor)
+    variance = pd.DataFrame([dict(Section="Model/settings", Effect=key,
+        Status=status if key == "Model_status" else None, Note=str(value)) for key,value in notes.items()])
+    return variance, pd.DataFrame(rows).reindex(columns=CONTRAST_COLUMNS), notes
 
 
 def analyze(df_wide, mapping=None, contrasts=None, response_transform="None", normalize_to=None,
-            rscript=None, progress_callback=None, timeout=1800):
+            rscript=None, progress_callback=None, timeout=1800,
+            include_replicate_condition=True, include_replicate_treatment=True):
     if progress_callback:
         progress_callback("Reading sample mapping and preparing response...")
     df = reshape_long(df_wide, infer_mapping(df_wide) if mapping is None else mapping)
+    random_effect_settings(df, include_replicate_condition, include_replicate_treatment)
     cells = sorted(set(zip(df.condition,df.treatment)))
     contrasts = list(itertools.combinations(cells,2)) if contrasts is None else list(contrasts)
     if not contrasts:
@@ -552,10 +621,13 @@ def analyze(df_wide, mapping=None, contrasts=None, response_transform="None", no
     df, divisor = prepare_response(df, response_transform, normalize_to)
     descriptive = descriptive_statistics(df,response_transform,normalize_to is not None)
     try:
-        backend,ids = run_r_model(df,contrasts,rscript,timeout,progress_callback)
-        variance,results,notes = format_results(df,backend,ids,contrasts,response_transform,normalize_to,divisor)
+        backend,ids = run_r_model(df,contrasts,rscript,timeout,progress_callback,
+            include_replicate_condition,include_replicate_treatment)
+        variance,results,notes = format_results(df,backend,ids,contrasts,response_transform,normalize_to,divisor,
+            include_replicate_condition,include_replicate_treatment)
     except (ValueError,RuntimeError,subprocess.TimeoutExpired) as error:
-        variance,results,notes = failed_results(df,contrasts,response_transform,normalize_to,divisor,str(error))
+        variance,results,notes = failed_results(df,contrasts,response_transform,normalize_to,divisor,str(error),
+            include_replicate_condition,include_replicate_treatment)
     return dict(descriptive=descriptive,variance=variance,contrasts=results,metadata=notes)
 
 
@@ -628,6 +700,10 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         self.title(f"ZetaStats {APP_VERSION}"); self.geometry("1250x850"); self.minsize(920,640)
         self.df=None; self.input_path=None; self.mapping_vars={}; self.contrast_vars={}
         self.transform_var=tk.StringVar(value="None"); self.normalize_var=tk.BooleanVar(value=False)
+        self.replicate_condition_var=tk.BooleanVar(value=True)
+        self.replicate_treatment_var=tk.BooleanVar(value=True)
+        self.random_structure_var=tk.StringVar(value="Full model")
+        self.random_effect_widgets=[]
         self.reference_var=tk.StringVar(); self.reference_cells={}
         self.status_var=tk.StringVar(value="Ready"); self.elapsed_var=tk.StringVar(value="Elapsed: 00:00")
         self.worker_queue=queue.Queue(); self.analysis_thread=None; self.started=None; self.busy=False
@@ -736,14 +812,29 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         self.mapping_generation=mapping
 
     def build_options(self):
-        frm=self.tab_options
+        self.options_scroll=ScrollableFrame(self.tab_options)
+        self.options_scroll.pack(fill="both",expand=True,padx=10,pady=10)
+        frm=self.options_scroll.scrollable_frame
         for text in (
             "Linear mixed model — one global condition × treatment model",
-            "Fixed: condition, overall treatment, condition × treatment.\nRandom: replicate, replicate × condition, replicate × treatment, biological sample.",
-            "Random treatment interpretation: treatment responses can vary between N1/N2/N3.\nCategorical random deviations share a variance; unrestricted slope correlations are not estimated.",
+            "Fixed effects: condition, overall treatment, condition × treatment.\nAlways included: experiment and biological sample random effects.",
             "Type III F tests and contrast t tests use Satterthwaite degrees of freedom (R / lmerTest).",
         ):
             ttk.Label(frm,text=text,wraplength=1100,justify="left").pack(anchor="w",padx=20,pady=10)
+        random_frame=ttk.LabelFrame(frm,text="Random-effects structure")
+        random_frame.pack(fill="x",padx=20,pady=10)
+        presets=ttk.Frame(random_frame);presets.pack(anchor="w",padx=12,pady=8)
+        for label,included in (("Full model",True),("Reduced model",False)):
+            button=ttk.Button(presets,text=label,command=lambda v=included:self._set_random_effects(v,v))
+            button.pack(side="left",padx=(0,10));self.random_effect_widgets.append(button)
+        ttk.Label(presets,textvariable=self.random_structure_var).pack(side="left",padx=10)
+        for label,var in (
+            ("Include experiment × condition random effect",self.replicate_condition_var),
+            ("Include experiment × treatment random effect",self.replicate_treatment_var),
+        ):
+            checkbox=ttk.Checkbutton(random_frame,text=label,variable=var,command=self._update_random_structure)
+            checkbox.pack(anchor="w",padx=12,pady=4);self.random_effect_widgets.append(checkbox)
+        ttk.Label(random_frame,text="Reduced model unchecks both optional terms. Experiment and biological sample effects remain.\nThese optional terms apply when both condition and treatment vary. Choose the structure for your experimental design; no automatic fallback is used.",wraplength=1050,justify="left").pack(anchor="w",padx=12,pady=8)
         transforms=ttk.Frame(frm);transforms.pack(anchor="w",padx=20,pady=10)
         ttk.Label(transforms,text="Transform response:").pack(side="left",padx=(0,15))
         for name in LMM_RESPONSE_TRANSFORMS:
@@ -757,6 +848,17 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         ttk.Label(frm,text="Each reference replicate has equal weight, regardless of its number of observations. The one shared divisor rescales every sample.",wraplength=1100).pack(anchor="w",padx=40,pady=5)
         ttk.Button(frm,text="Check statistical backend",command=self._check_backend).pack(anchor="w",padx=20,pady=20)
         ttk.Label(frm,text="Effect size: approximate partial eta-squared. Singular or failed fits keep descriptive results and withhold inference.",wraplength=1100).pack(anchor="w",padx=20,pady=5)
+
+    def _update_random_structure(self):
+        condition=self.replicate_condition_var.get();treatment=self.replicate_treatment_var.get()
+        self.random_structure_var.set("Full model" if condition and treatment else
+            "Reduced model" if not condition and not treatment else "Custom model")
+
+    def _set_random_effects(self,include_condition,include_treatment):
+        if self.busy:return
+        self.replicate_condition_var.set(include_condition)
+        self.replicate_treatment_var.set(include_treatment)
+        self._update_random_structure()
 
     def _check_backend(self):
         if self.busy:return
@@ -786,6 +888,7 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
     def _set_busy(self,busy):
         self.busy=busy
         for button in (self.open_button,self.update_button,self.run_button):button.configure(state="disabled" if busy else "normal")
+        for widget in self.random_effect_widgets:widget.configure(state="disabled" if busy else "normal")
         if busy:self.progress_bar.start(15)
         else:self.progress_bar.stop();self.started=None
 
@@ -798,13 +901,16 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
             messagebox.showerror("Mapping changed","Click 'Update contrasts and reference from mapping' before running.");return
         contrasts=[key for key,var in self.contrast_vars.items() if var.get()]
         reference=self.reference_cells.get(self.reference_var.get()) if self.normalize_var.get() else None
+        include_condition=self.replicate_condition_var.get()
+        include_treatment=self.replicate_treatment_var.get()
         try:
             reshape_long(self.df,mapping)
             if not contrasts:raise ValueError("Select at least one contrast.")
             if self.normalize_var.get() and reference is None:raise ValueError("Choose a normalization reference.")
         except Exception as error:
             messagebox.showerror("Analysis setup",str(error));return
-        suggested=f"{self.input_path.stem}_zetastats-v5-analysis.xlsx"
+        suffix="" if include_condition and include_treatment else "-reduced" if not include_condition and not include_treatment else "-custom"
+        suggested=f"{self.input_path.stem}_zetastats-v5{suffix}-analysis.xlsx"
         path=filedialog.asksaveasfilename(title="Save three-sheet analysis",initialdir=self.input_path.parent,
             initialfile=suggested,defaultextension=".xlsx",filetypes=[("Excel workbook","*.xlsx")])
         if not path:return
@@ -814,13 +920,14 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
         self.notebook.select(self.tab_run)
         self.output.delete("1.0",tk.END);self.status_var.set("Preparing analysis...")
         self.started=time.monotonic();self._set_busy(True)
-        self.analysis_thread=threading.Thread(target=self._analysis_worker,args=(df_copy,mapping,contrasts,transform,reference,Path(path)),daemon=True)
+        self.analysis_thread=threading.Thread(target=self._analysis_worker,args=(df_copy,mapping,contrasts,transform,reference,Path(path),include_condition,include_treatment),daemon=True)
         self.analysis_thread.start();self.after(100,self._poll_worker_queue)
 
-    def _analysis_worker(self,df_wide,mapping,contrasts,transform,reference,path):
+    def _analysis_worker(self,df_wide,mapping,contrasts,transform,reference,path,include_condition,include_treatment):
         try:
             results=analyze(df_wide,mapping,contrasts,transform,reference,
-                progress_callback=lambda msg:self.worker_queue.put(("status",msg)))
+                progress_callback=lambda msg:self.worker_queue.put(("status",msg)),
+                include_replicate_condition=include_condition,include_replicate_treatment=include_treatment)
             self.worker_queue.put(("status","Saving descriptive statistics, variance/Type III tests and contrasts..."))
             export_workbook(results,path);self.worker_queue.put(("done",results,path))
         except Exception as error:self.worker_queue.put(("error",str(error)))
@@ -841,7 +948,7 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
                     status=analysis["metadata"]["Model_status"]
                     self.status_var.set(f"Saved {path} — {status}")
                     columns=["Contrast","Estimate_B_minus_A","DenDF","p_raw","p_holm","Eta_squared_partial","Status","Symbol"]
-                    self.output.insert(tk.END,f"{APP_VERSION}\n{path}\nModel status: {status}\n\n"+analysis["contrasts"][columns].to_string(index=False))
+                    self.output.insert(tk.END,f"{APP_VERSION}\n{path}\nRandom-effects structure: {analysis['metadata']['Random_effects_structure']}\nModel: {analysis['metadata']['Model_formula']}\nModel status: {status}\n\n"+analysis["contrasts"][columns].to_string(index=False))
                     if status=="OK":messagebox.showinfo("Analysis saved",f"Three-sheet workbook saved:\n{path}")
                     else:messagebox.showwarning("Results saved; inference withheld",f"{status}\n\nDescriptive statistics and fit details are saved in:\n{path}")
                     self.after_idle(self.focus_force)
@@ -856,29 +963,42 @@ class HierarchicalStatisticalAnalyzerGUI(tk.Tk):
 
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description="ZetaStats v5.0.0: global factorial mixed models")
+    parser=argparse.ArgumentParser(description=f"ZetaStats {APP_VERSION}: global factorial mixed models")
     parser.add_argument("--input",type=Path,help="Wide CSV/XLSX; omit to open the GUI")
     parser.add_argument("--output",type=Path,help="Three-sheet XLSX output")
     parser.add_argument("--transform",choices=LMM_RESPONSE_TRANSFORMS,default="None")
+    parser.add_argument("--random-effects",choices=("full","reduced"),default="full",
+        help="Random-effects preset (default: full); reduced retains experiment and biological sample effects")
+    parser.add_argument("--drop-replicate-condition",action="store_true",
+        help="Exclude only the optional experiment × condition component from the chosen preset")
+    parser.add_argument("--drop-replicate-treatment",action="store_true",
+        help="Exclude only the optional experiment × treatment component from the chosen preset")
     parser.add_argument("--normalize-to",nargs=2,metavar=("CONDITION","TREATMENT"))
     parser.add_argument("--rscript",help="Path to Rscript")
     parser.add_argument("--sheet",default="0",help="Excel sheet name (default: first worksheet)")
     parser.add_argument("--check-backend",action="store_true")
     parser.add_argument("--version",action="version",version=APP_VERSION)
     args=parser.parse_args(argv)
+    include_condition=args.random_effects=="full" and not args.drop_replicate_condition
+    include_treatment=args.random_effects=="full" and not args.drop_replicate_treatment
     if args.check_backend:
         exe,version=check_backend(args.rscript);print(f"{version}\n{exe}\nRequired R packages available.");return 0
     if args.input is None:
         if args.rscript:os.environ["ZETASTATS_RSCRIPT"]=args.rscript
-        app=HierarchicalStatisticalAnalyzerGUI();app.mainloop();return 0
-    output=args.output or args.input.with_name(f"{args.input.stem}_zetastats-v5-analysis.xlsx")
+        app=HierarchicalStatisticalAnalyzerGUI()
+        app._set_random_effects(include_condition,include_treatment)
+        app.mainloop();return 0
+    suffix="" if include_condition and include_treatment else "-reduced" if not include_condition and not include_treatment else "-custom"
+    output=args.output or args.input.with_name(f"{args.input.stem}_zetastats-v5{suffix}-analysis.xlsx")
     if output.resolve()==args.input.resolve():parser.error("Output cannot overwrite the input file.")
     df=read_input(args.input,0 if args.sheet=="0" else args.sheet)
     results=analyze(df,response_transform=args.transform,
         normalize_to=tuple(args.normalize_to) if args.normalize_to else None,rscript=args.rscript,
-        progress_callback=lambda msg:print(msg,flush=True))
+        progress_callback=lambda msg:print(msg,flush=True),
+        include_replicate_condition=include_condition,include_replicate_treatment=include_treatment)
     export_workbook(results,output)
-    status=results["metadata"]["Model_status"];print(f"Saved: {output}\n{status}")
+    status=results["metadata"]["Model_status"]
+    print(f"Saved: {output}\nRandom-effects structure: {results['metadata']['Random_effects_structure']}\nModel: {results['metadata']['Model_formula']}\n{status}")
     return 0 if status=="OK" else 2
 
 

@@ -2,11 +2,21 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19500564.svg)](https://doi.org/10.5281/zenodo.19500564)
 
-GUI and command-line tool for hierarchical, replicate-aware analysis of biological measurements. **Current version: 5.0.0**, displayed as **ZetaStats v5.0.0** in the application.
+GUI and command-line tool for hierarchical, replicate-aware analysis of biological measurements. **Current version: 5.1.0**, displayed as **ZetaStats v5.1.0** in the application.
 
 Python handles input, mapping, the interface, and Excel export. R's **lme4**, **lmerTest**, and **jsonlite** provide one global linear mixed model, fitted by REML, with Satterthwaite degrees of freedom for Type III F tests and planned contrast t tests.
 
-## What's new in v5.0.0
+## What's new in v5.1.0
+
+- Explicit **Full**, **Reduced**, and **Custom** random-effects choices in the GUI and Python API; full remains the default.
+- CLI presets with `--random-effects full|reduced` and individual `--drop-replicate-condition` / `--drop-replicate-treatment` switches.
+- Experiment and biological sample random intercepts remain in every selected structure; fixed effects and the global-fit workflow are unchanged.
+- Exports record the selected structure, exact formula, included/excluded/not-applicable terms, and model status, including when inference is withheld.
+- Scrollable analysis options and output filenames that identify reduced or custom analyses.
+
+Choose the random-effects structure for the experimental design before interpreting results. Changing structure can change estimates, degrees of freedom, and p-values; v5.1.0 does not select a simpler model automatically after a singular or failed fit.
+
+### Features introduced in v5.0.0
 
 - Separate condition and treatment factors, including their fixed interaction.
 - One global model fitted to all included samples; selected contrasts use that same fit.
@@ -71,7 +81,7 @@ Blank cells are omitted. Duplicate headers, nonnumeric or infinite entries in in
 
 ## Statistical model
 
-For two factors with more than one level, the fitted model is:
+For two factors with more than one level, the default **Full** model is:
 
 ```r
 response ~ condition * treatment +
@@ -81,9 +91,17 @@ response ~ condition * treatment +
   (1 | sample_id)
 ```
 
-`sample_id` identifies condition × treatment × replicate. Condition, treatment, and their interaction are fixed effects. Random replicate × treatment deviations allow treatment responses to vary between experiments using a shared categorical variance component; this is not an unrestricted correlated random-slope model.
+`sample_id` identifies condition × treatment × replicate. Condition, treatment, and their interaction are fixed effects. When included, random replicate × treatment deviations allow treatment responses to vary between experiments using a shared categorical variance component; this is not an unrestricted correlated random-slope model.
 
-If one factor has a single level, the fixed part contains the other factor and the random part contains replicate and sample intercepts. Treatment is categorical, including when its labels are numeric doses; the model does not fit a continuous dose-response slope.
+The **Reduced** model explicitly excludes both optional replicate × factor terms:
+
+```r
+response ~ condition * treatment + (1 | replicate_id) + (1 | sample_id)
+```
+
+A **Custom** structure includes only one of `(1 | replicate_id:condition)` and `(1 | replicate_id:treatment)`. Experiment and biological sample intercepts are mandatory in all structures. All tests use the selected global fit. The selected structure and exact formula are recorded in `2_Variance_TypeIII`, together with each optional term's requested and applied state. Aliasing checks apply to the selected random components.
+
+If one factor has a single level, the fixed part contains the other factor and the random part contains replicate and sample intercepts. The optional replicate × factor components are then marked not applicable, regardless of their requested setting. Treatment is categorical, including when its labels are numeric doses; the model does not fit a continuous dose-response slope.
 
 The design must include at least two condition–treatment combinations, every combination of the included factor levels, at least two independent replicates overall and per combination, and at least two observations per sample. Aliased random components and rank-deficient fixed effects are rejected. These are minimum fit requirements, not a guarantee of adequate replication. With fewer than five experiments, the exported metadata flags that variance estimates and denominator degrees of freedom may be imprecise.
 
@@ -112,18 +130,23 @@ python hierarchical_statistical_analyzer.py
 1. Open a CSV or XLSX file.
 2. Review condition, treatment, and replicate mapping; exclude annotation columns.
 3. Click **Update contrasts and reference from mapping** after any mapping edit, then select planned contrasts.
-4. Choose the response transform and optional normalization reference; check the backend if needed.
-5. Click **Run analysis and save XLSX**, choose a new output path, and review the reported model status.
+4. Choose **Full model**, **Reduced model**, or adjust the two optional random-effect checkboxes in the analysis options.
+5. Choose the response transform and optional normalization reference; check the backend if needed.
+6. Click **Run analysis and save XLSX**, choose a new output path, and review the reported model status.
 
-The suggested output name is `<input-name>_zetastats-v5-analysis.xlsx`. Background execution displays status and elapsed time.
+The suggested output name is `<input-name>_zetastats-v5-analysis.xlsx` for full, `<input-name>_zetastats-v5-reduced-analysis.xlsx` for reduced, or `<input-name>_zetastats-v5-custom-analysis.xlsx` for custom settings. Background execution displays status and elapsed time.
 
 Run from the command line:
 
 ```bash
 python hierarchical_statistical_analyzer.py --input data.csv --output results.xlsx
 python hierarchical_statistical_analyzer.py --input data.xlsx --sheet Measurements --transform log2 --normalize-to WT 0J
+python hierarchical_statistical_analyzer.py --input data.csv --random-effects reduced
+python hierarchical_statistical_analyzer.py --input data.csv --drop-replicate-treatment
 python hierarchical_statistical_analyzer.py --help
 ```
+
+The CLI defaults to `--random-effects full`. The reduced preset excludes both optional terms; either drop switch excludes its named term from the chosen preset. The same switches can initialize the GUI when `--input` is omitted. In the Python `analyze()` API, use `include_replicate_condition` and `include_replicate_treatment` booleans (both default to `True`).
 
 The CLI infers mapping from column names and selects all pairwise contrasts; use the GUI or Python `analyze()` API for a restricted planned family. Exit status is 0 for an OK fit, 2 when a workbook is saved with inference withheld, and 1 for a handled input/backend error. The input file cannot be overwritten by the output.
 
@@ -134,7 +157,7 @@ Every exported workbook contains exactly these sheets:
 | Sheet | Contents |
 | --- | --- |
 | `1_Descriptive_stats` | Equally weighted biological replicate means and separate within-sample summaries; raw, normalized, and transformed scales as applicable |
-| `2_Variance_TypeIII` | Type III tests, random/residual variance components, conditional residual summaries, model status, settings, warnings, and R/package versions |
+| `2_Variance_TypeIII` | Type III tests, random/residual variance components, conditional residual summaries, model status, selected random-effects structure and exact formula, settings, warnings, and R/package versions |
 | `3_Contrasts` | Model estimated means, B-minus-A estimates, SE, individual 95% CI, Satterthwaite t/df, raw and Holm p-values, effect summaries, sample counts, status, and significance symbols |
 
 Main descriptive SD and SEM summarize biological replicate means. Within-sample SD and SEM describe measurement variability, not biological precision. Geometric means are undefined when their input values are nonpositive.
